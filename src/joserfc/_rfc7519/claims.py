@@ -8,6 +8,7 @@ from json import JSONEncoder
 from typing import Any, TypedDict, TypeGuard
 
 from ..errors import (
+    ClaimError,
     ExpiredTokenError,
     InvalidClaimError,
     MissingClaimError,
@@ -222,8 +223,62 @@ class JWTClaimsRegistry(BaseClaimsRegistry):
         self.check_value("iat", value)
 
 
-def _validate_numeric_time(s: object) -> TypeGuard[int | float]:
-    # NumericDate is a JSON number, and NaN and Infinity are not. Every comparison with NaN
+class ClaimsProfileRegistry:
+    """A named collection of claims registries.
+
+    Consumers that share the same token pipeline can register several
+    :class:`BaseClaimsRegistry` configurations and select one by name
+    after the signature has been verified::
+
+        profiles = ClaimsProfileRegistry(
+            finance=JWTClaimsRegistry(
+                iss={"essential": True},
+                trace_id={"essential": True},
+            ),
+            ops=JWTClaimsRegistry(iss={"essential": True}),
+        )
+        token = jwt.decode(text, key)
+        profiles.validate("finance", token.claims)
+
+    Validation errors keep their original error class (e.g.
+    ``MissingClaimError``) and claim name, with the selected profile
+    name appended to the description. The claims payload itself is
+    never included in the error.
+
+    :param profiles: mapping of profile name to a claims registry
+    """
+
+    def __init__(self, **profiles: BaseClaimsRegistry) -> None:
+        if not profiles:
+            raise ValueError("ClaimsProfileRegistry requires at least one profile")
+        self.profiles = profiles
+
+    def validate(self, profile: str, claims: dict[str, Any]) -> None:
+        """Validate the claims with the registry registered under ``profile``.
+
+        :param profile: name of the claims profile to apply
+        :param claims: the claims to validate
+        :raises ValueError: if the profile name is not registered
+        :raises ClaimError: re-raised with the profile name in the description
+        """
+        try:
+            registry = self.profiles[profile]
+        except KeyError:
+            raise ValueError(f"Unknown claims profile: {profile!r}") from None
+        try:
+            registry.validate(claims)
+        except ClaimError as error:
+            raise _error_with_profile(error, profile) from error
+
+
+def _error_with_profile(error: ClaimError, profile: str) -> ClaimError:
+    description = f"{error.description} (claims profile: {profile})"
+    return type(error)(error.claim, description)
+
+
+def _validate_numeric_time(
+    s: object,
+) -> TypeGuard[int | float]:  # NumericDate is a JSON number, and NaN and Infinity are not. Every comparison with NaN
     # is false, so an "exp" of NaN would never expire. An int is always finite, and math.isfinite
     # raises OverflowError for one too large for a float.
     return not isinstance(s, bool) and (isinstance(s, int) or (isinstance(s, float) and math.isfinite(s)))

@@ -260,6 +260,43 @@ Then, you can validate the claims with:
 
     claims_requests = MyClaimsRegistry(source={"essential": True})
 
+Named claims profiles
+---------------------
+
+When several consumers share the same token pipeline but require different
+claims, you can group the registries into a :class:`ClaimsProfileRegistry`
+and select one by name after ``jwt.decode`` has verified the signature:
+
+.. code-block:: python
+
+    from joserfc.jwt import ClaimsProfileRegistry, JWTClaimsRegistry
+
+    profiles = ClaimsProfileRegistry(
+        # finance notifications require extra tracking claims
+        finance=JWTClaimsRegistry(
+            iss={"essential": True},
+            sub={"essential": True},
+            exp={"essential": True},
+            trace_id={"essential": True},
+        ),
+        # ops notifications only require the standard claims
+        ops=JWTClaimsRegistry(
+            iss={"essential": True},
+            sub={"essential": True},
+            exp={"essential": True},
+        ),
+    )
+
+    token = jwt.decode(text, key)
+    profiles.validate("finance", token.claims)
+
+Each profile is a regular ``JWTClaimsRegistry``, so the built-in timing
+validators (``exp``, ``nbf``, ``iat``) and claims options work as usual.
+Validation failures keep their original error class (e.g.
+``MissingClaimError``) and claim name, with the selected profile name
+appended to the error description; the claims payload itself is never
+included in the error.
+
 JWS & JWE
 ---------
 

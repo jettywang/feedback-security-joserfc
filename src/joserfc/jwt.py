@@ -6,6 +6,7 @@ from ._rfc7519.claims import (
     BaseClaimsRegistry,
     Claims,
     ClaimsOption,
+    ClaimsProfileRegistry,
     JWTClaimsRegistry,
     convert_claims,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "ClaimsOption",
     # modules
     "BaseClaimsRegistry",
+    "ClaimsProfileRegistry",
     "JWTClaimsRegistry",
     "Token",
     # methods
