@@ -44,3 +44,18 @@ The functionality is exposed through:
 
 This provides a standards-compliant identifier suitable for use in any
 URI field across OAuth and JOSE-related specifications.
+
+Parsing and dual-index migration
+--------------------------------
+
+For systems that already index keys by the bare RFC 7638 thumbprint, the
+following helpers identify and decompose a thumbprint URI:
+
+- :meth:`joserfc.jwk.is_thumbprint_uri`
+- :meth:`joserfc.jwk.parse_thumbprint_uri`
+- :meth:`joserfc.jwk.normalize_thumbprint_identifier`
+
+:class:`joserfc.jwk.ThumbprintDirectory` keeps both indexes at once: each key
+remains reachable by its existing ``kid`` and bare thumbprint for legacy
+callers, while also being reachable by its thumbprint URI. See
+:doc:`/migrations/thumbprint-uri` for the migration guide.

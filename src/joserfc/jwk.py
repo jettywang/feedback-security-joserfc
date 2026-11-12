@@ -7,6 +7,8 @@ from ._keys import (
     Key,
     KeySet,
     KeySetSerialization,
+    ThumbprintDirectory,
+    ThumbprintIndex,
 )
 from ._rfc7517.pem import import_from_pem_key, import_from_ssh_key
 from ._rfc7517.types import AnyKey, DictKey, KeyParameters
@@ -17,6 +19,11 @@ from ._rfc7638 import calculate_thumbprint as thumbprint
 from ._rfc8037.okp_key import OKPKey
 from ._rfc8812 import register_secp256k1
 from ._rfc9278 import calculate_thumbprint_uri as thumbprint_uri
+from ._rfc9278 import (
+    is_thumbprint_uri,
+    normalize_thumbprint_identifier,
+    parse_thumbprint_uri,
+)
 from .errors import InvalidKeyTypeError, SecurityWarning
 from .registry import Header
 from .util import to_bytes
@@ -31,6 +38,7 @@ __all__ = [
     "KeySetSerialization",
     "KeyBase",
     "GuestProtocol",
+    "ThumbprintIndex",
     # modules
     "JWKRegistry",
     "OctKey",
@@ -38,12 +46,16 @@ __all__ = [
     "ECKey",
     "OKPKey",
     "KeySet",
+    "ThumbprintDirectory",
     # methods
     "guess_key",
     "import_key",
     "generate_key",
     "thumbprint",
     "thumbprint_uri",
+    "parse_thumbprint_uri",
+    "is_thumbprint_uri",
+    "normalize_thumbprint_identifier",
 ]
 
 register_secp256k1()

@@ -420,6 +420,40 @@ You can also use the ``jwk.thumbprint_uri`` method:
     })
     # 'urn:ietf:params:oauth:jwk-thumbprint:sha-256:DCdRGGDKvhAJgmVlCp6tosc2T9ELtd30S_15vn8bhrI'
 
+.. _thumbprint_directory:
+
+``ThumbprintDirectory``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 1.8.1
+
+A dual-index directory for migrating from bare RFC 7638 thumbprints to
+RFC 9278 thumbprint URIs. Each key is indexed by its ``kid``, its bare
+thumbprint, and its thumbprint URI, so legacy callers keep selecting keys by
+``kid`` while new clients use the URI. The JWK itself is never modified.
+
+.. code-block:: python
+
+    from joserfc import jwk
+
+    directory = jwk.ThumbprintDirectory([key])
+    # or wrap an existing key set
+    directory = jwk.ThumbprintDirectory.from_key_set(key_set)
+
+    directory.get(key.kid)                   # legacy kid
+    directory.get(key.thumbprint())          # bare RFC 7638 thumbprint
+    directory.get(key.thumbprint_uri())      # RFC 9278 thumbprint URI
+
+Use ``indexes()`` to enumerate the generated mapping, for example when
+producing a migration report:
+
+.. code-block:: python
+
+    for index in directory.indexes():
+        index.kid, index.thumbprint, index.thumbprint_uri
+
+See :doc:`/migrations/thumbprint-uri` for the full migration guidance.
+
 .. _ensure_kid:
 
 ``ensure_kid``

@@ -12,6 +12,18 @@ Changelog
 .. module:: joserfc
     :noindex:
 
+1.8.1
+-----
+
+**Not released yet**
+
+- **JWK**: Add ``ThumbprintDirectory``, a dual-index key directory that resolves
+  keys by the existing ``kid``, the bare RFC 7638 thumbprint, and the RFC 9278
+  thumbprint URI, enabling migration to algorithm-qualified identifiers without
+  breaking legacy callers.
+- **JWK**: Add ``parse_thumbprint_uri``, ``is_thumbprint_uri``, and
+  ``normalize_thumbprint_identifier`` helpers for RFC 9278 URIs.
+
 1.8.0
 -----
 

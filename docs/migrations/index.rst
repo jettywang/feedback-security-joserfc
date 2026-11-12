@@ -9,6 +9,7 @@ to ``joserfc``:
    authlib
    pyjwt
    python-jose
+   thumbprint-uri
 
 
 Comparison

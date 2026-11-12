@@ -1,12 +1,16 @@
 import random
 from collections.abc import Iterator
-from typing import Any, ClassVar, Self, TypedDict, cast
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Self, TypedDict, cast
 
 from ._rfc7517.types import AnyKey, DictKey, KeyParameters
 from ._rfc7518.ec_key import ECKey
 from ._rfc7518.oct_key import OctKey
 from ._rfc7518.rsa_key import RSAKey
 from ._rfc8037.okp_key import OKPKey
+from ._rfc9278 import (
+    concat_thumbprint_uri,
+    is_thumbprint_uri,
+)
 from .errors import (
     InvalidKeyIdError,
     InvalidKeyTypeError,
@@ -14,6 +18,9 @@ from .errors import (
     MissingKeyTypeError,
 )
 from .util import to_bytes
+
+if TYPE_CHECKING:
+    from ._rfc9278 import DigestMethod
 
 __all__ = [
     "OctKey",
@@ -24,6 +31,8 @@ __all__ = [
     "KeySet",
     "JWKRegistry",
     "KeySetSerialization",
+    "ThumbprintDirectory",
+    "ThumbprintIndex",
 ]
 
 Key = OctKey | RSAKey | ECKey | OKPKey
@@ -199,6 +208,185 @@ class KeySet:
             keys.append(key)
 
         return cls(keys)
+
+
+class ThumbprintIndex(NamedTuple):
+    """The three stable identifiers computed for one registered key."""
+
+    kid: str | None
+    thumbprint: str
+    thumbprint_uri: str
+    digest_method: "DigestMethod"
+
+
+class ThumbprintDirectory:
+    """A dual-index key directory for the bare-thumbprint to thumbprint-URI migration.
+
+    Each key is indexed three ways while the underlying JWK is left untouched:
+
+    - by its bare RFC 7638 thumbprint (the legacy directory index),
+    - by its algorithm-qualified RFC 9278 thumbprint URI (the new index),
+    - by its existing ``kid`` so legacy callers can keep selecting the key.
+
+    Because every form is derived from the same canonical public key material,
+    a private JWK and the matching public JWK resolve to the same entries.
+    """
+
+    def __init__(self, keys: list[Key] | None = None):
+        self._thumbprints: dict[str, Key] = {}
+        self._thumbprint_uris: dict[str, Key] = {}
+        self._kids: dict[str, list[Key]] = {}
+        self._indexes: dict[str, ThumbprintIndex] = {}
+        self._keys: list[Key] = []
+        for key in keys or []:
+            self.add_key(key)
+
+    def __iter__(self) -> Iterator[Key]:
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __contains__(self, identifier: object) -> bool:
+        if not isinstance(identifier, str):
+            return False
+        if is_thumbprint_uri(identifier):
+            return identifier in self._thumbprint_uris
+        return identifier in self._thumbprints or identifier in self._kids
+
+    @classmethod
+    def from_key_set(cls, key_set: KeySet) -> Self:
+        """Build a directory from every key already held in a :class:`KeySet`."""
+        return cls(list(key_set.keys))
+
+    @property
+    def keys(self) -> list[Key]:
+        """The registered keys in first-seen order."""
+        return list(self._keys)
+
+    def add_key(self, key: Key) -> ThumbprintIndex:
+        """Register one key under all three indexes and return its identifiers.
+
+        Re-adding the same key material is idempotent. An index slot that already
+        points at a different key raises ``ValueError``.
+        """
+        thumbprint = key.thumbprint()
+        digest_method = key.thumbprint_digest_method
+        thumbprint_uri = concat_thumbprint_uri(thumbprint, digest_method)
+        key.ensure_kid()
+        kid = cast(str | None, key.kid)
+
+        indexed = self._thumbprints.get(thumbprint)
+        if indexed is not None and indexed.thumbprint() == thumbprint:
+            # same canonical material: refresh aliases but keep the original key
+            registered = indexed
+        else:
+            if indexed is not None:
+                raise ValueError(f"Conflicting key for thumbprint: '{thumbprint}'")
+            if thumbprint_uri in self._thumbprint_uris:
+                raise ValueError(f"Conflicting key for thumbprint URI: '{thumbprint_uri}'")
+            registered = key
+            self._keys.append(key)
+            self._thumbprints[thumbprint] = registered
+
+        self._thumbprint_uris[thumbprint_uri] = registered
+        if kid is not None and registered not in self._kids.setdefault(kid, []):
+            # RFC 7517 does not require kids to be unique; keep every match,
+            # mirroring KeySet.get_by_kid which returns the first registered key.
+            self._kids[kid].append(registered)
+
+        index = ThumbprintIndex(
+            kid=kid,
+            thumbprint=thumbprint,
+            thumbprint_uri=thumbprint_uri,
+            digest_method=digest_method,
+        )
+        self._indexes[thumbprint] = index
+        return index
+
+    def get(
+        self,
+        identifier: str | None,
+        parameters: KeyParameters | None = None,
+    ) -> Key:
+        """Resolve a ``kid``, bare thumbprint, or thumbprint URI to a key.
+
+        Thumbprint URIs are matched first (they are self-describing), then bare
+        thumbprints, then the legacy ``kid`` index. ``None`` returns the only key.
+
+        :raises InvalidKeyIdError: if no registered key matches the identifier
+        """
+        if identifier is None and len(self._keys) == 1:
+            return self._keys[0]
+
+        candidates: list[Key] = []
+        if identifier is not None and is_thumbprint_uri(identifier):
+            key = self._thumbprint_uris.get(identifier)
+            if key is not None:
+                candidates = [key]
+        elif identifier is not None:
+            key = self._thumbprints.get(identifier)
+            if key is None:
+                shared = self._kids.get(identifier)
+                if shared:
+                    key = shared[0]
+            if key is not None:
+                candidates = [key]
+
+        if parameters and candidates:
+            candidates = list(_filter_keys_by_parameters(candidates, parameters))
+
+        if candidates:
+            return candidates[0]
+        raise InvalidKeyIdError(f"No key for identifier: '{identifier}'")
+
+    def get_by_kid(self, kid: str | None = None, parameters: KeyParameters | None = None) -> Key:
+        """Look a key up solely through the legacy ``kid`` index."""
+        if kid is None and len(self._keys) == 1:
+            return self._keys[0]
+        shared = self._kids.get(kid) if kid else None
+        candidates = list(shared) if shared else []
+        if parameters and candidates:
+            candidates = list(_filter_keys_by_parameters(candidates, parameters))
+        if candidates:
+            return candidates[0]
+        raise InvalidKeyIdError(f"No key for kid: '{kid}'")
+
+    def get_by_thumbprint(self, thumbprint: str, parameters: KeyParameters | None = None) -> Key:
+        """Look a key up through the legacy bare RFC 7638 thumbprint index."""
+        key = self._thumbprints.get(thumbprint)
+        candidates = [key] if key is not None else []
+        if parameters and candidates:
+            candidates = list(_filter_keys_by_parameters(candidates, parameters))
+        if candidates:
+            return candidates[0]
+        raise InvalidKeyIdError(f"No key for thumbprint: '{thumbprint}'")
+
+    def get_by_thumbprint_uri(
+        self,
+        thumbprint_uri: str,
+        parameters: KeyParameters | None = None,
+    ) -> Key:
+        """Look a key up through the new RFC 9278 thumbprint URI index."""
+        key = self._thumbprint_uris.get(thumbprint_uri)
+        candidates = [key] if key is not None else []
+        if parameters and candidates:
+            candidates = list(_filter_keys_by_parameters(candidates, parameters))
+        if candidates:
+            return candidates[0]
+        raise InvalidKeyIdError(f"No key for thumbprint URI: '{thumbprint_uri}'")
+
+    def index_of(self, key: Key) -> ThumbprintIndex:
+        """Return the recorded identifiers for a registered key."""
+        return self._indexes[key.thumbprint()]
+
+    def indexes(self) -> list[ThumbprintIndex]:
+        """All recorded identifiers, in key first-seen order (for migration reports)."""
+        return [self._indexes[key.thumbprint()] for key in self._keys]
+
+    def key_set(self) -> KeySet:
+        """Export the registered keys as a standard :class:`KeySet`."""
+        return KeySet(list(self._keys))
 
 
 def _filter_keys_by_parameters(keys: list[Key], parameters: KeyParameters) -> Iterator[Key]:
