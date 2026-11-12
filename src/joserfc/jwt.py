@@ -6,8 +6,10 @@ from ._rfc7519.claims import (
     BaseClaimsRegistry,
     Claims,
     ClaimsOption,
+    ClaimsViewFields,
     JWTClaimsRegistry,
     convert_claims,
+    select_claims_view,
 )
 from ._rfc7519.security import check_sensitive_data
 from .errors import InvalidPayloadError
@@ -29,6 +31,7 @@ __all__ = [
     # types
     "Claims",
     "ClaimsOption",
+    "ClaimsViewFields",
     # modules
     "BaseClaimsRegistry",
     "JWTClaimsRegistry",
@@ -36,6 +39,7 @@ __all__ = [
     # methods
     "encode",
     "decode",
+    "select_claims_view",
     "check_sensitive_data",
 ]
 

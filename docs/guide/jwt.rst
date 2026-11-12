@@ -235,6 +235,31 @@ You can also validate against a single required value:
     )
     claims_requests.validate(claims)
 
+Selecting a claims view
+~~~~~~~~~~~~~~~~~~~~~~~
+
+After validation, downstream code often needs only a few claims. Use
+``jwt.select_claims_view`` to build an independent view containing just the
+declared fields, with support for nested selections:
+
+.. code-block:: python
+
+    from joserfc import jwt
+
+    token = jwt.decode(text, key)
+    claims_requests.validate(token.claims)
+
+    view = jwt.select_claims_view(
+        token.claims,
+        {"jti": None, "iss": None, "flags": {"retry": None, "notify": None}},
+    )
+
+Fields that are not present in the claims are skipped, and undeclared
+(private) claims never appear in the view. The returned dict is deep-copied,
+so mutating the view does not alter the original claims. Since ``jwt.decode``
+and ``claims_requests.validate`` raise on failure, a view is only ever built
+from a verified, validated token.
+
 Custom validation
 -----------------
 

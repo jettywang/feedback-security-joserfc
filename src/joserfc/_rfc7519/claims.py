@@ -1,9 +1,10 @@
 import calendar
+import copy
 import datetime
 import json
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from json import JSONEncoder
 from typing import Any, TypedDict, TypeGuard
 
@@ -15,6 +16,44 @@ from ..errors import (
 from ..util import to_bytes
 
 Claims = dict[str, Any]
+
+#: A field selection for :func:`select_claims_view`. Either a flat collection
+#: of claim names, or a mapping of claim names to nested selections.
+ClaimsViewFields = Collection[str] | Mapping[str, "ClaimsViewFields | None"]
+
+
+def select_claims_view(claims: Claims, fields: ClaimsViewFields) -> Claims:
+    """Build an independent view containing only the selected claims.
+
+    This helper is meant to be called *after* the claims have been validated,
+    so that downstream code (e.g. a task handler) receives just the claims it
+    needs instead of the whole payload.
+
+    :param claims: the validated claims dict
+    :param fields: the claims to select; either a collection of claim names,
+        or a mapping of claim names to nested selections for dict values
+    :return: a new dict with the selected claims, deep-copied so that mutating
+        the view never alters the original claims
+
+    Unknown fields (not present in ``claims``) and undeclared private claims
+    are left out of the view::
+
+        view = select_claims_view(
+            token.claims,
+            {"jti": None, "iss": None, "flags": {"retry": None, "notify": None}},
+        )
+    """
+    view: Claims = {}
+    items = fields.items() if isinstance(fields, Mapping) else ((name, None) for name in fields)
+    for name, sub in items:
+        if name not in claims:
+            continue
+        value = claims[name]
+        if sub is None:
+            view[name] = copy.deepcopy(value)
+        elif isinstance(value, dict):
+            view[name] = select_claims_view(value, sub)
+    return view
 
 
 def convert_claims(claims: Claims, encoder_cls: type[JSONEncoder] | None = None) -> bytes:

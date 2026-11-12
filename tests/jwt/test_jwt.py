@@ -2,7 +2,9 @@ from unittest import TestCase
 
 from joserfc import jwe, jws, jwt
 from joserfc.errors import (
+    BadSignatureError,
     DecodeError,
+    InvalidClaimError,
     InvalidPayloadError,
     MissingClaimError,
     UnsupportedAlgorithmError,
@@ -120,6 +122,56 @@ class TestJWT(TestCase):
             self.oct_key,
             ("HS384",),
         )
+
+    def test_claims_view(self):
+        claims = {
+            "jti": "task-1",
+            "iss": "https://issuer.example",
+            "flags": {"retry": True, "notify": False, "debug": True},
+            "scope": "internal",
+        }
+        data = jwt.encode({"alg": "HS256"}, claims, self.oct_key)
+        token = jwt.decode(data, self.oct_key)
+
+        claims_registry = jwt.JWTClaimsRegistry(jti={"essential": True}, iss={"essential": True})
+        claims_registry.validate(token.claims)
+
+        view = jwt.select_claims_view(
+            token.claims,
+            {"jti": None, "iss": None, "flags": {"retry": None, "notify": None}, "unknown": None},
+        )
+        # only the declared fields are exposed; unknown fields and private
+        # claims ("scope", "flags.debug") stay on the validation side
+        self.assertEqual(
+            view,
+            {"jti": "task-1", "iss": "https://issuer.example", "flags": {"retry": True, "notify": False}},
+        )
+
+        # the view is independent: mutating it does not alter the claims
+        view["flags"]["retry"] = False
+        view["jti"] = "task-2"
+        self.assertEqual(token.claims["flags"]["retry"], True)
+        self.assertEqual(token.claims["jti"], "task-1")
+
+    def test_claims_view_flat_fields(self):
+        claims = {"jti": "task-1", "iss": "a", "extra": [1, 2]}
+        view = jwt.select_claims_view(claims, ["jti", "extra"])
+        self.assertEqual(view, {"jti": "task-1", "extra": [1, 2]})
+        view["extra"].append(3)
+        self.assertEqual(claims["extra"], [1, 2])
+
+    def test_no_claims_view_on_bad_signature(self):
+        data = jwt.encode({"alg": "HS256"}, {"jti": "task-1"}, self.oct_key)
+        other_key = OctKey.generate_key()
+        with self.assertRaises(BadSignatureError):
+            jwt.decode(data, other_key)
+
+    def test_no_claims_view_on_invalid_claims(self):
+        data = jwt.encode({"alg": "HS256"}, {"jti": "task-1", "iss": "b"}, self.oct_key)
+        token = jwt.decode(data, self.oct_key)
+        claims_registry = jwt.JWTClaimsRegistry(iss={"essential": True, "value": "a"})
+        with self.assertRaises(InvalidClaimError):
+            claims_registry.validate(token.claims)
 
     def test_with_embedded_jwk(self):
         value = (
