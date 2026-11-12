@@ -7,6 +7,8 @@ from joserfc.errors import (
     DecodeError,
     ExceededSizeError,
     InvalidKeyTypeError,
+    MismatchedAdditionalAuthenticatedDataError,
+    MissingAdditionalAuthenticatedDataError,
     UnsupportedHeaderError,
 )
 from joserfc.jwa import JWEKeyEncryption
@@ -269,3 +271,98 @@ class TestJWEJSON(TestCase):
         value = jwe.encrypt_json(obj, None)
         del value["encrypted_key"]
         self.assertRaises(DecodeError, jwe.decrypt_json, value, key)
+
+
+class TestExpectedAAD(TestCase):
+    rsa_key = RSAKey.generate_key()
+    unrelated_ec_key = ECKey.generate_key()
+    oct_key = OctKey.generate_key(128, parameters={"kid": "first"})
+    other_key = OctKey.generate_key(128, parameters={"kid": "second"})
+    key_set = KeySet([oct_key, other_key])
+
+    def _encrypt_document(self, model, aad):
+        obj = model({"enc": "A128CBC-HS256"}, b"record plaintext", aad=aad)
+        obj.add_recipient({"alg": "A128KW"}, self.oct_key)
+        obj.add_recipient({"alg": "A128KW"}, self.other_key)
+        return jwe.encrypt_json(obj, None)
+
+    def _flattened_document(self, aad):
+        obj = FlattenedJSONEncryption({"enc": "A128GCM"}, b"single record", aad=aad)
+        obj.add_recipient({"alg": "A128KW"}, self.oct_key)
+        return jwe.encrypt_json(obj, None)
+
+    def test_matching_aad_returns_plaintext_for_every_recipient(self):
+        for model in (GeneralJSONEncryption, FlattenedJSONEncryption):
+            with self.subTest(model=model.__name__):
+                value = self._encrypt_document(model, b"record-42")
+                result = jwe.decrypt_json(value, self.key_set, expected_aad=b"record-42")
+                self.assertEqual(result.aad, b"record-42")
+                self.assertEqual(result.plaintext, b"record plaintext")
+
+        value = self._flattened_document(b"record-7")
+        result = jwe.decrypt_json(value, self.oct_key, expected_aad=b"record-7")
+        self.assertEqual(result.aad, b"record-7")
+        self.assertEqual(result.plaintext, b"single record")
+
+    def test_single_recipient_key_also_passes_expected_aad(self):
+        value = self._encrypt_document(GeneralJSONEncryption, b"record-42")
+        registry = jwe.JWERegistry(verify_all_recipients=False)
+        result = jwe.decrypt_json(value, self.other_key, registry=registry, expected_aad=b"record-42")
+        self.assertEqual(result.plaintext, b"record plaintext")
+
+    def test_rsa_recipient_flattened_passes_expected_aad(self):
+        obj = FlattenedJSONEncryption({"enc": "A128GCM"}, b"rsa record", aad=b"record-rsa")
+        obj.add_recipient({"alg": "RSA-OAEP"}, self.rsa_key)
+        value = jwe.encrypt_json(obj, None)
+        result = jwe.decrypt_json(value, self.rsa_key, expected_aad=b"record-rsa")
+        self.assertEqual(result.plaintext, b"rsa record")
+
+    def test_omitted_expected_aad_preserves_legacy_behavior(self):
+        value = self._encrypt_document(GeneralJSONEncryption, b"record-42")
+        result = jwe.decrypt_json(value, self.key_set)
+        self.assertEqual(result.aad, b"record-42")
+        self.assertEqual(result.plaintext, b"record plaintext")
+
+    def test_mismatched_aad_is_rejected_without_exposing_values(self):
+        for model in (GeneralJSONEncryption, FlattenedJSONEncryption):
+            with self.subTest(model=model.__name__):
+                value = self._encrypt_document(model, b"record-42")
+                with self.assertRaises(MismatchedAdditionalAuthenticatedDataError) as ctx:
+                    jwe.decrypt_json(value, self.key_set, expected_aad=b"record-43")
+                message = str(ctx.exception)
+                self.assertNotIn("record-42", message)
+                self.assertNotIn("record-43", message)
+                self.assertIn("mismatched_aad", message)
+
+    def test_missing_aad_raises_missing_error(self):
+        for model in (GeneralJSONEncryption, FlattenedJSONEncryption):
+            with self.subTest(model=model.__name__):
+                value = self._encrypt_document(model, None)
+                self.assertNotIn("aad", value)
+                with self.assertRaises(MissingAdditionalAuthenticatedDataError) as ctx:
+                    jwe.decrypt_json(value, self.key_set, expected_aad=b"record-42")
+                self.assertIn("missing_aad", str(ctx.exception))
+
+    def test_empty_expected_aad_requires_absent_member(self):
+        for model in (GeneralJSONEncryption, FlattenedJSONEncryption):
+            with self.subTest(model=model.__name__):
+                absent_value = self._encrypt_document(model, None)
+                result = jwe.decrypt_json(absent_value, self.key_set, expected_aad=b"")
+                self.assertIsNone(result.aad)
+                self.assertEqual(result.plaintext, b"record plaintext")
+
+                present_value = self._encrypt_document(model, b"record-42")
+                with self.assertRaises(MismatchedAdditionalAuthenticatedDataError) as ctx:
+                    jwe.decrypt_json(present_value, self.key_set, expected_aad=b"")
+                self.assertIn("mismatched_aad", str(ctx.exception))
+
+    def test_empty_expected_aad_on_flattened_document(self):
+        value = self._flattened_document(None)
+        result = jwe.decrypt_json(value, self.oct_key, expected_aad=b"")
+        self.assertIsNone(result.aad)
+        self.assertEqual(result.plaintext, b"single record")
+
+    def test_check_runs_before_recipient_decryption(self):
+        value = self._encrypt_document(GeneralJSONEncryption, b"record-42")
+        with self.assertRaises(MismatchedAdditionalAuthenticatedDataError):
+            jwe.decrypt_json(value, self.unrelated_ec_key, expected_aad=b"record-43")

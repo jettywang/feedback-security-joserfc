@@ -180,6 +180,22 @@ class InvalidEncryptedKeyError(JoseError):
     description = "JWE Encrypted Key value SHOULD be an empty octet sequence"
 
 
+class MissingAdditionalAuthenticatedDataError(DecodeError):
+    """Raised when an expected JWE AAD value is not present in the
+    JSON Serialization."""
+
+    error = "missing_aad"
+    description = "Missing 'aad' in the JWE JSON Serialization"
+
+
+class MismatchedAdditionalAuthenticatedDataError(DecodeError):
+    """Raised when the JWE AAD value in the JSON Serialization does not
+    match the expected value supplied by the caller."""
+
+    error = "mismatched_aad"
+    description = "Mismatched 'aad' in the JWE JSON Serialization"
+
+
 # --- JWT related errors --- #
 
 

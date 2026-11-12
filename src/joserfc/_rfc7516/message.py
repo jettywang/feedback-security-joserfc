@@ -7,6 +7,8 @@ from ..errors import (
     InvalidEncryptedKeyError,
     InvalidExchangeKeyError,
     JoseError,
+    MismatchedAdditionalAuthenticatedDataError,
+    MissingAdditionalAuthenticatedDataError,
 )
 from ..registry import reject_unprotected_crit_header
 from ..util import (
@@ -35,6 +37,26 @@ __all__ = [
 ]
 
 EncryptionData = CompactEncryption | GeneralJSONEncryption | FlattenedJSONEncryption
+
+
+def verify_expected_aad(
+    obj: BaseJSONEncryption,
+    expected_aad: bytes,
+) -> None:
+    """Check the JWE AAD carried by a JSON Serialization against the
+    context the caller expects. An empty ``expected_aad`` requires the
+    serialization to omit its ``aad`` member; a non-empty value requires
+    an equal AAD member. Error messages only name the mismatch category.
+    """
+    if not expected_aad:
+        if obj.aad is not None:
+            raise MismatchedAdditionalAuthenticatedDataError()
+        return
+
+    if obj.aad is None:
+        raise MissingAdditionalAuthenticatedDataError()
+    if obj.aad != expected_aad:
+        raise MismatchedAdditionalAuthenticatedDataError()
 
 
 def perform_encrypt(obj: EncryptionData, registry: JWERegistry) -> None:

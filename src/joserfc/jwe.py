@@ -8,7 +8,7 @@ from ._rfc7516.json import (
     represent_flattened_json,
     represent_general_json,
 )
-from ._rfc7516.message import perform_decrypt, perform_encrypt
+from ._rfc7516.message import perform_decrypt, perform_encrypt, verify_expected_aad
 from ._rfc7516.models import (
     CompactEncryption,
     FlattenedJSONEncryption,
@@ -218,6 +218,7 @@ def decrypt_json(
     algorithms: Collection[str] | None = None,
     registry: JWERegistry | None = None,
     sender_key: ECKey | OKPKey | KeySet | None = None,
+    expected_aad: bytes | None = None,
 ) -> GeneralJSONEncryption | FlattenedJSONEncryption:
     """Decrypt the JWE JSON Serialization (in dict) to a
     ``GeneralJSONEncryption`` or ``FlattenedJSONEncryption`` object.
@@ -227,6 +228,10 @@ def decrypt_json(
     :param algorithms: a collection (list, tuple, or set) of allowed algorithms
     :param registry: a JWERegistry to use
     :param sender_key: only required when using ECDH-1PU
+    :param expected_aad: record context the caller expects to be bound to the
+        JWE AAD. ``None`` skips the check and preserves the legacy behavior;
+        an empty bytes value requires the serialization to omit the ``aad``
+        member; a non-empty value requires an equal AAD member
     :return: an instance of ``GeneralJSONEncryption`` or ``FlattenedJSONEncryption``
     """
     if algorithms:
@@ -237,11 +242,15 @@ def decrypt_json(
     reject_unprotected_crit_header(data.get("unprotected"))
     if "recipients" in data:
         general_obj = extract_general_json(cast(GeneralJSONSerialization, data), registry)
+        if expected_aad is not None:
+            verify_expected_aad(general_obj, expected_aad)
         _attach_recipient_keys(general_obj.recipients, private_key, sender_key)
         perform_decrypt(general_obj, registry)
         return general_obj
     else:
         flattened_obj = extract_flattened_json(data, registry)
+        if expected_aad is not None:
+            verify_expected_aad(flattened_obj, expected_aad)
         _attach_recipient_keys(flattened_obj.recipients, private_key, sender_key)
         perform_decrypt(flattened_obj, registry)
         return flattened_obj

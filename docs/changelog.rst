@@ -12,6 +12,16 @@ Changelog
 .. module:: joserfc
     :noindex:
 
+Unreleased
+----------
+
+- **JWE**: ``decrypt_json`` accepts an ``expected_aad`` parameter to verify the
+  JSON Serialization AAD against caller-supplied record context before returning
+  the plaintext. Omitting the parameter preserves the legacy behavior; an empty
+  value requires an absent ``aad`` member. Missing and mismatched AAD raise
+  distinct ``MissingAdditionalAuthenticatedDataError`` and
+  ``MismatchedAdditionalAuthenticatedDataError`` categories.
+
 1.8.0
 -----
 

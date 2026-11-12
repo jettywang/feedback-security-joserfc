@@ -181,6 +181,35 @@ recipient get verified:
     registry = JWERegistry(verify_all_recipients=False)
     jwe.decrypt_json(data, key_set, registry=registry)
 
+Verifying Additional Authenticated Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a record identifier is stored outside of the encrypted document, bind it to
+the JWE via its ``aad`` member on encryption and pass it back as
+``expected_aad`` on decryption. The check runs before any recipient key is
+exercised, so the plaintext is only returned when the authenticated context
+matches the current record:
+
+.. code-block:: python
+
+    obj = GeneralJSONEncryption({"enc": "A128GCM"}, plaintext, aad=record_id.encode())
+    obj.add_recipient({"alg": "A128KW"}, key)
+    data = encrypt_json(obj, None)
+
+    # raises MissingAdditionalAuthenticatedDataError when the document has no
+    # ``aad`` member, and MismatchedAdditionalAuthenticatedDataError when it
+    # differs; error messages only name the mismatch category
+    result = jwe.decrypt_json(data, key, expected_aad=record_id.encode())
+
+The three states are kept distinct:
+
+- ``expected_aad=None`` (the default) skips the check entirely and preserves
+  the legacy behavior.
+- ``expected_aad=b""`` requires the serialization to omit its ``aad`` member;
+  a present member is reported as a mismatch.
+- A non-empty value requires an equal ``aad`` member; a missing member is a
+  missing error and a different value is a mismatch.
+
 General and Flattened
 ~~~~~~~~~~~~~~~~~~~~~
 
