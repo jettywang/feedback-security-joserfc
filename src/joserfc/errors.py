@@ -160,6 +160,14 @@ class BadSignatureError(JoseError):
     error = "bad_signature"
 
 
+class VerificationBudgetExceededError(JoseError):
+    """This error is designed for JWS. It is raised when the number of
+    signature verification operations on a single message exceeds the
+    given verification budget."""
+
+    error = "verification_budget_exceeded"
+
+
 class ExceededSizeError(JoseError):
     """This error is designed for validating the token's content size.
     It raised when the data exceeds the maximum allowed length."""

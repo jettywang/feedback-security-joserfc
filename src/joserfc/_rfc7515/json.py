@@ -2,7 +2,7 @@ import copy
 from collections.abc import Callable
 from typing import Any
 
-from ..errors import DecodeError
+from ..errors import DecodeError, VerificationBudgetExceededError
 from ..registry import reject_unprotected_crit_header
 from ..util import (
     json_b64decode,
@@ -25,6 +25,7 @@ from .types import (
 
 __all__ = [
     "FindKey",
+    "VerificationBudget",
     "sign_general_json",
     "sign_flattened_json",
     "sign_json_member",
@@ -35,6 +36,39 @@ __all__ = [
 ]
 
 FindKey = Callable[[HeaderMember], Any]
+
+
+class VerificationBudget:
+    """An optional budget to limit how many signature verification
+    operations a single message may consume. Every actual verification
+    (a call to the algorithm's ``verify`` method) is counted on the
+    budget, no matter if the signature is valid or not.
+
+    :param max_verifications: maximum allowed verification operations,
+        ``None`` means unlimited (operations are still counted)
+    """
+
+    def __init__(self, max_verifications: int | None = None) -> None:
+        if max_verifications is not None and max_verifications < 0:
+            raise ValueError("'max_verifications' MUST be greater than or equal to 0")
+        #: maximum allowed verification operations, None means unlimited
+        self.max_verifications = max_verifications
+        #: number of verification operations already performed
+        self.used = 0
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether the budget can pay for another verification operation."""
+        return self.max_verifications is not None and self.used >= self.max_verifications
+
+    def consume(self) -> None:
+        """Account for one verification operation.
+
+        :raises VerificationBudgetExceededError: when the budget is exhausted
+        """
+        if self.exhausted:
+            raise VerificationBudgetExceededError()
+        self.used += 1
 
 
 def sign_general_json(
@@ -110,14 +144,19 @@ def __signature_to_member(sig: JSONSignatureDict, registry: JWSRegistry) -> Head
     return member
 
 
-def verify_general_json(obj: GeneralJSONSignature, registry: JWSRegistry, find_key: FindKey) -> bool:
+def verify_general_json(
+    obj: GeneralJSONSignature,
+    registry: JWSRegistry,
+    find_key: FindKey,
+    budget: VerificationBudget | None = None,
+) -> bool:
     payload_segment = obj.segments["payload"]
     if not obj.signatures:
         return False
 
     for index, signature in enumerate(obj.signatures):
         member = obj.members[index]
-        if not verify_signature(member, signature, payload_segment, registry, find_key):
+        if not verify_signature(member, signature, payload_segment, registry, find_key, budget):
             return False
     return True
 
@@ -134,6 +173,7 @@ def verify_signature(
     payload_segment: bytes,
     registry: JWSRegistry,
     find_key: FindKey,
+    budget: VerificationBudget | None = None,
 ) -> bool:
     headers = check_json_member_headers(member, registry)
     alg = registry.get_alg(headers["alg"])
@@ -150,6 +190,8 @@ def verify_signature(
 
     sig = urlsafe_b64decode(signature_segment)
     signing_input = b".".join([protected_segment, payload_segment])
+    if budget is not None:
+        budget.consume()
     return alg.verify(signing_input, sig, key)
 
 

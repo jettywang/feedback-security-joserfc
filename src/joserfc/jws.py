@@ -1,4 +1,4 @@
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any, overload
 
 from ._rfc7515.compact import (
@@ -7,9 +7,11 @@ from ._rfc7515.compact import (
     verify_compact,
 )
 from ._rfc7515.json import (
+    VerificationBudget,
     detach_json_content,
     verify_flattened_json,
     verify_general_json,
+    verify_signature,
 )
 from ._rfc7515.model import (
     CompactSignature,
@@ -41,9 +43,9 @@ from ._rfc7797.json import (
 )
 from ._rfc7797.json import extract_rfc7797_json as extract_flattened_json
 from ._rfc7797.util import is_rfc7797_enabled
-from .errors import BadSignatureError, MissingKeyError
+from .errors import BadSignatureError, MissingKeyError, VerificationBudgetExceededError
 from .jwa import setup_jws_algorithms
-from .jwk import Key, KeyFlexible, guess_key
+from .jwk import Key, KeyFlexible, KeySet, guess_key
 from .registry import Header
 from .util import to_bytes
 
@@ -58,6 +60,8 @@ __all__ = [
     "CompactSignature",
     "GeneralJSONSignature",
     "FlattenedJSONSignature",
+    "VerificationBudget",
+    "RoleVerificationResult",
     # methods
     "serialize_compact",
     "deserialize_compact",
@@ -65,6 +69,7 @@ __all__ = [
     "validate_compact",
     "serialize_json",
     "deserialize_json",
+    "verify_json_roles",
     "detach_content",
     # consts
     "default_registry",
@@ -306,6 +311,136 @@ def deserialize_json(
         if not verify_flattened_json(flattened_obj, registry, find_key):
             raise BadSignatureError()
         return flattened_obj
+
+
+class RoleVerificationResult:
+    """The result of :func:`verify_json_roles`. It reports which required
+    roles presented a valid signature, and how the verification budget
+    was spent."""
+
+    def __init__(self, roles: dict[str, bool], verifications: int, budget_exhausted: bool) -> None:
+        #: per required role, True if a valid signature of that role was found
+        self.roles = roles
+        #: number of actual verification operations performed on the message
+        self.verifications = verifications
+        #: True when the verification stopped because the budget was exhausted
+        self.budget_exhausted = budget_exhausted
+
+    @property
+    def approved(self) -> bool:
+        """True when every required role presented a valid signature."""
+        return all(self.roles.values())
+
+    def __repr__(self) -> str:
+        return (
+            f"RoleVerificationResult(approved={self.approved}, roles={self.roles}, "
+            f"verifications={self.verifications}, budget_exhausted={self.budget_exhausted})"
+        )
+
+
+def verify_json_roles(
+    value: GeneralJSONSerialization,
+    role_keys: Mapping[str, KeyFlexible],
+    required_roles: Collection[str] | None = None,
+    algorithms: Collection[str] | None = None,
+    registry: JWSRegistry | None = None,
+    max_verifications: int | None = None,
+) -> RoleVerificationResult:
+    """Verify a general JWS JSON Serialization of an approval message that
+    carries signatures of multiple roles. The message is approved only when
+    every required role contributed at least one valid signature. A single
+    signature can satisfy one role only.
+
+    The application assigns the available public key(s) to each role with
+    ``role_keys``. A signature is attributed to a role by the ``kid`` header
+    when both the signature and the role's keys declare key IDs; otherwise
+    every signature is tried with the role's key.
+
+    An optional budget (``max_verifications``) limits how many verification
+    operations this single message may consume. Every actual verification is
+    counted on the budget, including failed ones. When the budget runs out,
+    the verification stops and the result reports ``budget_exhausted``.
+
+    .. code-block:: python
+
+        >>> result = verify_json_roles(
+        ...     message,
+        ...     role_keys={"manager": manager_key, "auditor": auditor_key},
+        ...     max_verifications=4,
+        ... )
+        >>> result.approved
+        True
+
+    :param value: a dict of the general JWS JSON Serialization
+    :param role_keys: a mapping of role name to the role's public key(s)
+    :param required_roles: roles that MUST sign the message, defaults to
+        all the roles in ``role_keys``
+    :param algorithms: a collection (list, tuple, or set) of allowed algorithms
+    :param registry: a JWSRegistry to use
+    :param max_verifications: maximum verification operations the message may
+        consume, ``None`` means unlimited
+    :return: object of RoleVerificationResult
+    """
+    if registry is None:
+        registry = construct_registry(algorithms)
+
+    if required_roles is None:
+        roles = list(role_keys)
+    else:
+        roles = list(dict.fromkeys(required_roles))
+
+    missing_roles = [role for role in roles if role not in role_keys]
+    if missing_roles:
+        raise ValueError(f"Missing keys for roles: {missing_roles}")
+
+    obj = extract_general_json(value, registry)
+    payload_segment = obj.segments["payload"]
+    budget = VerificationBudget(max_verifications)
+
+    verified = dict.fromkeys(roles, False)
+    consumed: set[int] = set()
+    budget_exhausted = False
+
+    for role in roles:
+        key_source = role_keys[role]
+
+        def find_key(member: HeaderMember, _source: KeyFlexible = key_source) -> Key:
+            return guess_key(_source, member, use="sig")
+
+        for index, (member, signature) in enumerate(zip(obj.members, obj.signatures)):
+            if index in consumed or not _role_key_matches(member, key_source):
+                continue
+            try:
+                verified_one = verify_signature(member, signature, payload_segment, registry, find_key, budget)
+            except VerificationBudgetExceededError:
+                budget_exhausted = True
+                break
+            if verified_one:
+                verified[role] = True
+                consumed.add(index)
+                break
+        if budget_exhausted:
+            break
+
+    return RoleVerificationResult(verified, budget.used, budget_exhausted)
+
+
+def _role_key_matches(member: HeaderMember, key_source: KeyFlexible) -> bool:
+    """A signature can only belong to a role if its ``kid`` matches one of
+    the role's keys. When either side does not declare a key ID, the
+    signature is considered a candidate for the role."""
+    sig_kid = member.headers().get("kid")
+    if sig_kid is None:
+        return True
+
+    kids: set[str] = set()
+    if isinstance(key_source, KeySet):
+        kids = {key.kid for key in key_source.keys if key.kid}
+    else:
+        kid = getattr(key_source, "kid", None)
+        if kid:
+            kids = {kid}
+    return not kids or sig_kid in kids
 
 
 @overload

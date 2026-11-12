@@ -231,6 +231,41 @@ you can tell if the signature is flattened or general with ``obj.flattened``:
     else:
         print("General JSON Serialization")
 
+Approvals with Multiple Roles
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An approval message may carry several signatures in a general JSON
+serialization, and the service must confirm that every required role
+signed it. :meth:`jws.verify_json_roles` verifies that each required role
+contributed at least one valid signature. The application assigns the
+available public key(s) to each role, and a single signature can satisfy
+one role only:
+
+.. code-block:: python
+
+    from joserfc import jws
+
+    result = jws.verify_json_roles(
+        message,
+        role_keys={"manager": manager_public_key, "auditor": auditor_public_key},
+    )
+    result.approved  # True when every required role signed
+    result.roles  # {"manager": True, "auditor": True}
+
+A signature is attributed to a role by the ``kid`` header when both the
+signature and the role's keys declare key IDs.
+
+To limit how many verification operations a single message may consume,
+pass the optional ``max_verifications`` budget. Every actual verification
+is counted, including failed ones. When the budget runs out, the
+verification stops and the result reports it:
+
+.. code-block:: python
+
+    result = jws.verify_json_roles(message, role_keys, max_verifications=4)
+    result.verifications  # number of performed verification operations
+    result.budget_exhausted  # True when the budget stopped the verification
+
 Algorithms
 ----------
 
