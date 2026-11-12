@@ -82,9 +82,7 @@ def encrypt_compact(
 
     obj = CompactEncryption(protected, to_bytes(plaintext))
     recipient: Recipient[Key] = Recipient(obj)
-    key = guess_key(public_key, recipient, True, use="enc")
-    key.check_use("enc")
-    recipient.recipient_key = key
+    _resolve_recipient_key(recipient, public_key, True)
     if sender_key:
         recipient.sender_key = _guess_sender_key(recipient, sender_key, True)
     obj.recipient = recipient
@@ -128,9 +126,7 @@ def decrypt_compact(
     obj = extract_compact(to_bytes(value), registry)
     recipient = obj.recipient
     assert recipient is not None
-    key = guess_key(private_key, recipient, use="enc")
-    key.check_use("enc")
-    recipient.recipient_key = key
+    _resolve_recipient_key(recipient, private_key, False)
     if sender_key:
         recipient.sender_key = _guess_sender_key(recipient, sender_key)
     perform_decrypt(obj, registry)
@@ -202,9 +198,9 @@ def encrypt_json(
             recipient.sender_key = _guess_sender_key(recipient, sender_key, True)
         if not recipient.recipient_key:
             assert public_key is not None
-            key = guess_key(public_key, recipient, True, use="enc")
-            key.check_use("enc")
-            recipient.recipient_key = key
+            _resolve_recipient_key(recipient, public_key, True)
+        else:
+            _check_recipient_key(recipient)
 
     perform_encrypt(obj, registry)
     if isinstance(obj, GeneralJSONEncryption):
@@ -247,13 +243,44 @@ def decrypt_json(
         return flattened_obj
 
 
+def _check_recipient_key(recipient: Recipient[Key]) -> None:
+    """Run the shared key purpose boundary check.
+
+    Key purpose ("use") is always enforced here, before any cryptographic
+    operation, so the compact and JSON serializations reject a
+    mis-purposed key identically on both encryption and decryption. Key
+    type is checked later at the algorithm boundary, and key operation
+    ("key_ops") is checked when the primitive actually runs.
+    """
+    key = recipient.recipient_key
+    assert key is not None
+    key.check_use("enc")
+
+
+def _resolve_recipient_key(
+    recipient: Recipient[Key],
+    key: KeyFlexible,
+    random: bool,
+) -> None:
+    """Resolve the recipient key, then run the shared key boundary checks.
+
+    Key resolution ("use" filtering for key sets) and key purpose ("use")
+    are validated at this one boundary before any cryptographic operation
+    runs, so the compact and JSON serializations reject misconfigured
+    keys identically.
+    """
+    resolved = guess_key(key, recipient, random, use="enc")
+    recipient.recipient_key = resolved
+    _check_recipient_key(recipient)
+
+
 def _attach_recipient_keys(
-    recipients: list[Recipient[Key]], private_key: KeyFlexible, sender_key: ECKey | OKPKey | KeySet | None = None
+    recipients: list[Recipient[Key]],
+    private_key: KeyFlexible,
+    sender_key: ECKey | OKPKey | KeySet | None = None,
 ) -> None:
     for recipient in recipients:
-        key = guess_key(private_key, recipient, use="enc")
-        key.check_use("enc")
-        recipient.recipient_key = key
+        _resolve_recipient_key(recipient, private_key, False)
         if sender_key:
             recipient.sender_key = _guess_sender_key(recipient, sender_key)
 
