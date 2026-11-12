@@ -1,7 +1,8 @@
 import random
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any, ClassVar, Self, TypedDict, cast
 
+from ._rfc7517.models import SymmetricKey
 from ._rfc7517.types import AnyKey, DictKey, KeyParameters
 from ._rfc7518.ec_key import ECKey
 from ._rfc7518.oct_key import OctKey
@@ -165,6 +166,40 @@ class KeySet:
         if keys:
             return random.choice(keys)
         return None
+
+    def public_view(self, use: str | None = None, scope: Iterable[str] | None = None) -> Self:
+        """Create an independent key set that only contains the public
+        material of the keys eligible for publication. Symmetric keys
+        (such as ``oct`` keys) are always excluded, since publishing
+        them would leak the shared secret. The source key set is left
+        untouched.
+
+        :param use: optional "use" value (e.g. ``"sig"``); keys designed
+            for another use are excluded
+        :param scope: optional collection of ``kid`` values that limits
+            which keys may be published
+        :return: a new KeySet with public-only copies of the eligible keys
+        """
+        allowed_kids = set(scope) if scope is not None else None
+
+        keys: list[Key] = []
+        for key in self.keys:
+            if isinstance(key, SymmetricKey):
+                continue
+
+            designed_use = key.get("use")
+            if use and designed_use and designed_use != use:
+                continue
+
+            if allowed_kids is not None and key.kid not in allowed_kids:
+                continue
+
+            # re-import the public dict so the view holds independent
+            # key objects without any private material
+            data = key.as_dict(private=False)
+            keys.append(self.registry_cls.import_key(data))
+
+        return self.__class__(keys)
 
     @classmethod
     def import_key_set(cls, value: KeySetSerialization, parameters: KeyParameters | None = None) -> Self:

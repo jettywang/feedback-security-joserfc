@@ -1,7 +1,9 @@
 from unittest import TestCase
 
+from joserfc import jwt
 from joserfc.errors import InvalidKeyIdError, InvalidKeyTypeError, MissingKeyError
-from joserfc.jwk import ECKey, KeySet, OctKey, RSAKey
+from joserfc.jwk import ECKey, KeySet, OctKey, OKPKey, RSAKey
+
 from tests.keys import read_key
 
 KeySet.algorithm_keys["RS256"] = ["RSA"]
@@ -110,3 +112,66 @@ class TestKeySet(TestCase):
         key_set = KeySet.generate_key_set("oct", 8, count=1)
         self.assertFalse(key_set == "foo")
         self.assertNotEqual(key_set, "foo")
+
+    def build_mixed_key_set(self):
+        keys = [
+            RSAKey.generate_key(2048, parameters={"kid": "sig-rsa", "use": "sig", "alg": "RS256"}),
+            ECKey.generate_key("P-256", parameters={"kid": "enc-ec", "use": "enc"}),
+            OKPKey.generate_key("Ed25519", parameters={"kid": "sig-okp", "use": "sig"}),
+            OctKey.generate_key(256, parameters={"kid": "oct-hmac", "use": "sig"}),
+        ]
+        return KeySet(keys)
+
+    def test_public_view_filters_use_and_scope(self):
+        key_set = self.build_mixed_key_set()
+        view = key_set.public_view(use="sig", scope={"sig-rsa", "sig-okp", "oct-hmac"})
+
+        kids = [key.kid for key in view]
+        self.assertEqual(kids, ["sig-rsa", "sig-okp"])
+
+        for data in view.as_dict()["keys"]:
+            # only public material and public metadata are exposed
+            self.assertNotIn("d", data)
+            self.assertNotIn("k", data)
+            self.assertEqual(data["use"], "sig")
+        self.assertEqual(view.get_by_kid("sig-rsa")["alg"], "RS256")
+
+    def test_public_view_is_independent(self):
+        key_set = self.build_mixed_key_set()
+        view = key_set.public_view(use="sig")
+
+        for key in view:
+            self.assertFalse(key.is_private)
+            self.assertTrue(all(key is not source_key for source_key in key_set.keys))
+
+        # mutating the view does not touch the source key set
+        view.keys.clear()
+        self.assertEqual(len(key_set.keys), 4)
+
+    def test_public_view_verifies_notification(self):
+        key_set = self.build_mixed_key_set()
+        view = key_set.public_view(use="sig")
+
+        token = jwt.encode({"alg": "RS256", "kid": "sig-rsa"}, {"sub": "notify"}, key_set)
+        decoded = jwt.decode(token, view)
+        self.assertEqual(decoded.claims["sub"], "notify")
+
+    def test_public_view_keeps_source_readable(self):
+        key_set = self.build_mixed_key_set()
+        key_set.public_view(use="sig")
+
+        # members and metadata of the source set stay intact
+        self.assertEqual(len(key_set.keys), 4)
+        private_data = key_set.as_dict(private=True)["keys"]
+        self.assertIn("d", private_data[0])
+        self.assertIn("k", private_data[3])
+
+        key = key_set.get_by_kid("sig-rsa")
+        self.assertTrue(key.is_private)
+        self.assertEqual(key["use"], "sig")
+        self.assertEqual(key["alg"], "RS256")
+
+    def test_public_view_without_match(self):
+        key_set = self.build_mixed_key_set()
+        view = key_set.public_view(scope={"missing-kid"})
+        self.assertFalse(view)

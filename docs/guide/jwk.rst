@@ -366,6 +366,24 @@ An example about importing JWKS from a URL:
     resp = requests.get("https://example.com/jwks.json")
     key_set = KeySet.import_key_set(resp.json())
 
+Export a public view
+~~~~~~~~~~~~~~~~~~~~
+
+A signing service that publishes its JWKS to other systems can build an
+independent public view of a key set with ``public_view``. The view only
+contains the public material and public metadata (``kid``, ``use``,
+``alg``, ...) of the eligible keys; symmetric keys are always excluded,
+and the source key set is left untouched:
+
+.. code-block:: python
+
+    # only "sig" keys whose kid is in the publish scope
+    public_set = key_set.public_view(use="sig", scope={"kid-1", "kid-2"})
+    data = public_set.as_dict()
+
+Both parameters are optional; without them, the view contains the public
+part of every asymmetric key in the set.
+
 Key methods
 -----------
 
